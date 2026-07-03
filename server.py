@@ -1,4 +1,3 @@
-
 import base64
 import numpy as np
 import cv2
@@ -21,11 +20,11 @@ if not os.path.exists(MODEL_PATH):
     urllib.request.urlretrieve(url, MODEL_PATH)
     print("✅ Modelo descargado")
  
-# ── Configurar MediaPipe ──
+# ── Configurar MediaPipe (ahora detecta hasta 2 manos) ──
 base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
 options = vision.HandLandmarkerOptions(
     base_options=base_options,
-    num_hands=1,
+    num_hands=2,
     min_hand_detection_confidence=0.5,
     min_hand_presence_confidence=0.5,
     min_tracking_confidence=0.5,
@@ -54,6 +53,18 @@ def extract_features(landmarks):
     rx = max_x - min_x or 1
     ry = max_y - min_y or 1
     return [((l.x - min_x) / rx, (l.y - min_y) / ry) for l in landmarks]
+ 
+def extract_features_multi(hands_landmarks):
+    """Combina las landmarks de hasta 2 manos en un solo vector de features.
+    Ordena las manos de izquierda a derecha para que sea consistente entre frames.
+    Si solo hay 1 mano, rellena con ceros para mantener siempre el mismo tamaño (42 puntos)."""
+    hands_sorted = sorted(hands_landmarks, key=lambda h: sum(l.x for l in h) / len(h))
+    features = []
+    for h in hands_sorted[:2]:
+        features.extend(extract_features(h))
+    while len(features) < 42:
+        features.append((0.0, 0.0))
+    return features[:42]
  
 def sequence_distance(a, b):
     if not a or not b:
@@ -100,8 +111,7 @@ def process_frame():
     result = detector.detect(mp_image)
  
     if result.hand_landmarks:
-        landmarks = result.hand_landmarks[0]
-        features = extract_features(landmarks)
+        features = extract_features_multi(result.hand_landmarks)
         state["hand_visible"] = True
         state["sequence"].append(features)
         if len(state["sequence"]) > SEQUENCE_LENGTH:
@@ -176,4 +186,3 @@ if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     print(f"✅ Iniciando en el puerto {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
- 
