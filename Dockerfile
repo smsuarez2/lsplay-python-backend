@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y \
     libxcb1 \
     libx11-6 \
     libgomp1 \
+    libgles2 \
+    libegl1 \
+    libgbm1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
