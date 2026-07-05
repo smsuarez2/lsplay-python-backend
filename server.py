@@ -31,22 +31,16 @@ options = vision.HandLandmarkerOptions(
 )
 detector = vision.HandLandmarker.create_from_options(options)
 
-# Letras que se hacen CON movimiento (usan secuencia de frames)
-MOTION_LETTERS = {"j", "z"}
-
 # ── Estado global ──
 state = {
     "hand_visible":  False,
     "detected_sign": None,
     "confidence":    0,
-    "sequence":      [],
-    "samples":       {},   # letras estáticas: lista de frames sueltos | letras de movimiento: lista de secuencias
+    "samples":       {},   # { "a": [frame1, frame2, ...], "b": [...], ... }
     "training":      False,
     "train_sign":    None,
     "train_count":   {},
 }
-
-SEQUENCE_LENGTH = 15
 
 def extract_features(landmarks):
     xs = [l.x for l in landmarks]
@@ -58,7 +52,6 @@ def extract_features(landmarks):
     return [((l.x - min_x) / rx, (l.y - min_y) / ry) for l in landmarks]
 
 def frame_distance(a, b):
-    """Distancia entre dos frames sueltos (para letras estáticas)."""
     if not a or not b:
         return float('inf')
     n = min(len(a), len(b))
@@ -68,22 +61,9 @@ def frame_distance(a, b):
     )
     return total / n
 
-def sequence_distance(a, b):
-    """Distancia entre dos secuencias de frames (para letras con movimiento)."""
-    if not a or not b:
-        return float('inf')
-    n = min(len(a), len(b))
-    total = sum(
-        sum((x - y) ** 2 for x, y in zip(a[i], b[i])) ** 0.5
-        for i in range(n)
-    )
-    return total / n
-
-def classify_static(features, samples):
+def classify(features, samples):
     best_label, best_dist = None, float('inf')
     for label, examples in samples.items():
-        if label in MOTION_LETTERS:
-            continue
         for ex in examples:
             d = frame_distance(features, ex)
             if d < best_dist:
@@ -92,21 +72,6 @@ def classify_static(features, samples):
     if best_label is None:
         return None, 0
     conf = max(0, min(100, int((1 - best_dist / 0.6) * 100)))
-    return best_label, conf
-
-def classify_motion(sequence, samples):
-    best_label, best_dist = None, float('inf')
-    for label, seqs in samples.items():
-        if label not in MOTION_LETTERS:
-            continue
-        for s in seqs:
-            d = sequence_distance(sequence, s)
-            if d < best_dist:
-                best_dist = d
-                best_label = label
-    if best_label is None:
-        return None, 0
-    conf = max(0, min(100, int((1 - best_dist / 3) * 100)))
     return best_label, conf
 
 # ── ENDPOINT PRINCIPAL: recibe frame del navegador ──
@@ -133,44 +98,21 @@ def process_frame():
         features = extract_features(landmarks)
         state["hand_visible"] = True
 
-        state["sequence"].append(features)
-        if len(state["sequence"]) > SEQUENCE_LENGTH:
-            state["sequence"].pop(0)
-
         if state["training"] and state["train_sign"]:
             label = state["train_sign"]
             if label not in state["samples"]:
                 state["samples"][label] = []
-
-            if label in MOTION_LETTERS:
-                # Letra con movimiento: guarda la secuencia completa de 15 frames
-                if len(state["sequence"]) == SEQUENCE_LENGTH:
-                    state["samples"][label].append(list(state["sequence"]))
-                    state["train_count"][label] = state["train_count"].get(label, 0) + 1
-                    state["sequence"] = []
-                    print(f"✅ Muestra {state['train_count'][label]} (movimiento) para '{label}'")
-            else:
-                # Letra estática: guarda el frame actual directamente
-                state["samples"][label].append(features)
-                state["train_count"][label] = state["train_count"].get(label, 0) + 1
-                print(f"✅ Muestra {state['train_count'][label]} (estatica) para '{label}'")
+            state["samples"][label].append(features)
+            state["train_count"][label] = state["train_count"].get(label, 0) + 1
+            print(f"✅ Muestra {state['train_count'][label]} para '{label}'")
 
         elif not state["training"] and state["samples"]:
-            static_label, static_conf = classify_static(features, state["samples"])
-            motion_label, motion_conf = None, 0
-            if len(state["sequence"]) == SEQUENCE_LENGTH:
-                motion_label, motion_conf = classify_motion(state["sequence"], state["samples"])
-                state["sequence"] = []
-
-            if motion_label and motion_conf > static_conf:
-                state["detected_sign"] = motion_label
-                state["confidence"] = motion_conf
-            elif static_label:
-                state["detected_sign"] = static_label
-                state["confidence"] = static_conf
+            label, conf = classify(features, state["samples"])
+            if label:
+                state["detected_sign"] = label
+                state["confidence"] = conf
     else:
         state["hand_visible"] = False
-        state["sequence"] = []
 
     return jsonify({
         "hand_visible":  state["hand_visible"],
@@ -184,7 +126,6 @@ def process_frame():
 def start_training(sign):
     state["training"]   = True
     state["train_sign"] = sign
-    state["sequence"]   = []
     return jsonify({"ok": True, "mensaje": f"Entrenando: {sign}"})
 
 @app.route('/api/train/stop', methods=['POST'])
@@ -197,7 +138,6 @@ def stop_training():
 def clear_samples():
     state["samples"]     = {}
     state["train_count"] = {}
-    state["sequence"]    = []
     return jsonify({"ok": True, "mensaje": "Muestras borradas"})
 
 @app.route('/api/status', methods=['GET'])
